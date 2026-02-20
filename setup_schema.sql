@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS vacancies_hhnew (
     parsing_date_time TIMESTAMP WITH TIME ZONE,          -- Дата и время парсинга
     vacancy_link     TEXT NOT NULL UNIQUE,               -- Ссылка на вакансию (уникальная)
     raw_text         TEXT,                               -- Сырой текст вакансии
-    parameters_json  JSONB                               -- JSON с параметрами (название, зарплата, компания и т.д.)
+    parameters_json  JSONB,                              -- JSON с параметрами (название, зарплата, компания и т.д.)
+    status_vacancy   TEXT                                -- Статус: NULL = активна, 'archiv' = в архиве
 );
 
 -- Индекс для быстрого поиска по ссылке (проверка дублей)

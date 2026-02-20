@@ -3,6 +3,7 @@ import asyncio
 from fastapi import FastAPI
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from backend.tasks import run_scraper_task
+from backend.status_checker import check_vacancy_status_task
 from backend.config import config
 from backend.bot import create_bot
 from telegram.ext import Application
@@ -18,16 +19,18 @@ bot_app: Application = None
 async def startup_event():
     # 1. Start Scheduler
     job_kwargs = dict(
-        max_instances=1,        # Never run 2 tasks in parallel
-        coalesce=True,          # Skip missed runs
-        misfire_grace_time=600  # 10 min grace
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=600
     )
-    # 9:00 Moscow (UTC+3 = 06:00 UTC)
+    # Scraper: 9:00 and 18:00 Moscow (UTC+3)
     scheduler.add_job(run_scraper_task, "cron", hour=6, minute=0, **job_kwargs)
-    # 18:00 Moscow (UTC+3 = 15:00 UTC)
     scheduler.add_job(run_scraper_task, "cron", hour=15, minute=0, **job_kwargs)
+    # Status checker: 01:00 and 14:00 Moscow (UTC+3)
+    scheduler.add_job(check_vacancy_status_task, "cron", hour=22, minute=0, **job_kwargs)  # 01:00 MSK
+    scheduler.add_job(check_vacancy_status_task, "cron", hour=11, minute=0, **job_kwargs)  # 14:00 MSK
     scheduler.start()
-    logger.info("Scheduler: runs at 09:00 and 18:00 Moscow time.")
+    logger.info("Scheduler started: scraper at 09:00/18:00, status check at 01:00/14:00 MSK")
     logger.info("Scheduler started.")
 
     # 2. Start Telegram Bot

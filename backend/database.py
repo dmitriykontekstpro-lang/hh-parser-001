@@ -40,3 +40,35 @@ def insert_vacancy(vacancy_data: dict):
     except Exception as e:
         logging.error(f"Error inserting vacancy: {e}")
         return None
+
+def get_vacancies_without_status(limit: int = 100):
+    """
+    Returns vacancies where status_vacancy IS NULL or EMPTY.
+    Returns list of (id, vacancy_link) tuples.
+    """
+    try:
+        response = (
+            supabase.table("vacancies_hhnew")
+            .select("id, vacancy_link")
+            .is_("status_vacancy", "null")
+            .limit(limit)
+            .execute()
+        )
+        return response.data if response.data else []
+    except Exception as e:
+        logging.error(f"Error fetching vacancies without status: {e}")
+        return []
+
+def update_vacancy_status(vacancy_id: str, status: str):
+    """Updates status_vacancy field for a given vacancy id."""
+    try:
+        response = (
+            supabase.table("vacancies_hhnew")
+            .update({"status_vacancy": status})
+            .eq("id", vacancy_id)
+            .execute()
+        )
+        return response.data
+    except Exception as e:
+        logging.error(f"Error updating vacancy status {vacancy_id}: {e}")
+        return None
