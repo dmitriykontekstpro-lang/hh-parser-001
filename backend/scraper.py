@@ -8,6 +8,27 @@ from playwright.async_api import async_playwright
 from fake_useragent import UserAgent
 from datetime import datetime
 
+
+def _is_blocked_by_stop_words(title: str, stop_words: List[str]) -> bool:
+    """
+    Returns True if title should be EXCLUDED.
+    Uses EXACT PHRASE match (case-insensitive).
+    Example: stop word "директор" will NOT block "Директор по маркетингу"
+             BUT stop word "Директор по маркетингу" WILL block it.
+    This way short/partial stop words don't filter too aggressively.
+    """
+    title_lower = title.lower().strip()
+    for sw in stop_words:
+        sw_lower = sw.lower().strip()
+        if not sw_lower:
+            continue
+        # Check exact phrase match (the stop word must appear as complete phrase)
+        # Using word-boundary style: surrounded by spaces or at start/end
+        pattern = r'(?<![а-яёa-z])' + re.escape(sw_lower) + r'(?![а-яёa-z])'
+        if re.search(pattern, title_lower, re.IGNORECASE):
+            return True
+    return False
+
 logger = logging.getLogger(__name__)
 
 
@@ -57,7 +78,6 @@ class HHScraper:
         """
         if stop_words is None:
             stop_words = []
-        stop_words_lower = [sw.lower() for sw in stop_words]
 
         all_links = []
         page_num = 0
@@ -91,8 +111,8 @@ class HHScraper:
                         title = await item.inner_text() if item else ""
                         title = title.strip()
 
-                        # Apply stop word filter
-                        if any(sw in title.lower() for sw in stop_words_lower):
+                        # Apply stop word filter (exact phrase match)
+                        if _is_blocked_by_stop_words(title, stop_words):
                             logger.info(f"[Filter] Skipped by stop word: '{title}'")
                             continue
 
