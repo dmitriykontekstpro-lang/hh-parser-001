@@ -1,0 +1,11 @@
+playwright
+playwright-stealth
+fake-useragent
+supabase
+python-dotenv
+apscheduler
+fastapi
+uvicorn
+python-telegram-bot
+requests
+beautifulsoup4
