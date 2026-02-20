@@ -1,40 +1,82 @@
--- Enable UUID extension if not enabled
+-- ============================================================
+-- ПОЛНАЯ СХЕМА БАЗЫ ДАННЫХ ДЛЯ HH ПАРСЕРА
+-- Запустить один раз в Supabase SQL Editor
+-- ============================================================
+
+-- Расширение для UUID
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- 1. Vacancies table
-CREATE TABLE IF NOT EXISTS vacancies (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc', now()),
-    vacancy_link TEXT NOT NULL UNIQUE,
-    raw_text TEXT,
-    parsing_date_time TIMESTAMP WITH TIME ZONE,
-    parameters_json JSONB
+-- ============================================================
+-- 1. ТАБЛИЦА ВАКАНСИЙ (куда сохраняются собранные вакансии)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS vacancies_hhnew (
+    id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    created_at       TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc', now()),
+    parsing_date_time TIMESTAMP WITH TIME ZONE,          -- Дата и время парсинга
+    vacancy_link     TEXT NOT NULL UNIQUE,               -- Ссылка на вакансию (уникальная)
+    raw_text         TEXT,                               -- Сырой текст вакансии
+    parameters_json  JSONB                               -- JSON с параметрами (название, зарплата, компания и т.д.)
 );
 
--- 2. Search Queries table (Where we search for jobs)
-CREATE TABLE IF NOT EXISTS search_queries (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+-- Индекс для быстрого поиска по ссылке (проверка дублей)
+CREATE INDEX IF NOT EXISTS idx_vacancies_hhnew_link ON vacancies_hhnew(vacancy_link);
+
+-- ============================================================
+-- 2. ТАБЛИЦА ПОИСКОВЫХ ЗАПРОСОВ (что ищем)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS search_queries_hhnew (
+    id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc', now()),
-    query TEXT NOT NULL UNIQUE,
-    is_active BOOLEAN DEFAULT TRUE
+    query      TEXT NOT NULL UNIQUE,    -- Поисковый запрос, например: "Python разработчик"
+    is_active  BOOLEAN DEFAULT TRUE     -- TRUE = активный (будет использоваться при парсинге)
 );
 
--- 3. Stop Words table (Titles containing these will be skipped)
-CREATE TABLE IF NOT EXISTS stop_words (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+-- ============================================================
+-- 3. ТАБЛИЦА СТОП-СЛОВ (фильтрация по названию)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS stop_words_hhnew (
+    id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc', now()),
-    word TEXT NOT NULL UNIQUE -- e.g. "Senior", "Lead" if you only want Junior
+    word       TEXT NOT NULL UNIQUE     -- Стоп-слово, например: "Senior", "Lead", "1С"
 );
 
--- RLS Policies (Optional but recommended)
-ALTER TABLE vacancies ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "Enable read access for all users" ON vacancies FOR SELECT USING (true);
-CREATE POLICY "Enable insert for service role" ON vacancies FOR INSERT WITH CHECK (true);
+-- ============================================================
+-- ПОЛИТИКИ БЕЗОПАСНОСТИ (RLS)
+-- ============================================================
 
-ALTER TABLE search_queries ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "Enable read access for all users" ON search_queries FOR SELECT USING (true);
-CREATE POLICY "Enable insert for service role" ON search_queries FOR INSERT WITH CHECK (true);
+-- Вакансии
+ALTER TABLE vacancies_hhnew ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow read" ON vacancies_hhnew;
+DROP POLICY IF EXISTS "Allow insert" ON vacancies_hhnew;
+CREATE POLICY "Allow read" ON vacancies_hhnew FOR SELECT USING (true);
+CREATE POLICY "Allow insert" ON vacancies_hhnew FOR INSERT WITH CHECK (true);
 
-ALTER TABLE stop_words ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "Enable read access for all users" ON stop_words FOR SELECT USING (true);
-CREATE POLICY "Enable insert for service role" ON stop_words FOR INSERT WITH CHECK (true);
+-- Поисковые запросы
+ALTER TABLE search_queries_hhnew ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow read" ON search_queries_hhnew;
+DROP POLICY IF EXISTS "Allow insert" ON search_queries_hhnew;
+CREATE POLICY "Allow read" ON search_queries_hhnew FOR SELECT USING (true);
+CREATE POLICY "Allow insert" ON search_queries_hhnew FOR INSERT WITH CHECK (true);
+
+-- Стоп-слова
+ALTER TABLE stop_words_hhnew ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow read" ON stop_words_hhnew;
+DROP POLICY IF EXISTS "Allow insert" ON stop_words_hhnew;
+CREATE POLICY "Allow read" ON stop_words_hhnew FOR SELECT USING (true);
+CREATE POLICY "Allow insert" ON stop_words_hhnew FOR INSERT WITH CHECK (true);
+
+-- ============================================================
+-- ТЕСТОВЫЕ ДАННЫЕ (можете удалить или изменить)
+-- ============================================================
+
+INSERT INTO search_queries_hhnew (query) VALUES
+    ('Python разработчик'),
+    ('Data Analyst'),
+    ('Маркетолог')
+ON CONFLICT (query) DO NOTHING;
+
+INSERT INTO stop_words_hhnew (word) VALUES
+    ('Senior'),
+    ('Lead'),
+    ('1С')
+ON CONFLICT (word) DO NOTHING;
