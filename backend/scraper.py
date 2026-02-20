@@ -1,25 +1,23 @@
 import asyncio
 import random
 import logging
-from typing import List, Optional, Dict
-from playwright.async_api import async_playwright, Page, BrowserContext
+import re
+from typing import List, Dict
+from urllib.parse import quote
+from playwright.async_api import async_playwright
 from fake_useragent import UserAgent
 from datetime import datetime
-import json
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
 
 class HHScraper:
     def __init__(self):
         self.ua = UserAgent()
         self.base_url = "https://hh.ru"
 
-    async def _create_context(self, playwright) -> BrowserContext:
-        """Creates a browser context with anti-detection settings."""
-        user_agent = self.ua.random
-        
+    async def _create_browser(self, playwright):
+        """Creates a browser with anti-detection settings."""
         browser = await playwright.chromium.launch(
             headless=True,
             args=[
@@ -27,122 +25,187 @@ class HHScraper:
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
                 '--disable-infobars',
-                '--window-position=0,0',
-                '--ignore-certificate-errors',
                 '--disable-accelerated-2d-canvas',
                 '--disable-gpu',
             ]
         )
-        
         context = await browser.new_context(
-            user_agent=user_agent,
+            user_agent=self.ua.random,
             viewport={'width': 1920, 'height': 1080},
             locale='ru-RU',
             timezone_id='Europe/Moscow'
         )
-        
-        await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-        
-        return context, browser
+        await context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        )
+        return browser, context
 
-    async def get_search_links(self, query: str, pages: int = 2) -> List[str]:
-        """Scrapes vacancy links from search results."""
-        links = []
+    def _query_to_slug(self, query: str) -> str:
+        """
+        Converts query like "Python разработчик" to URL slug like "python-razrabotchik".
+        HH.ru accepts translit or just Russian in the URL path.
+        We use the search endpoint instead and pass query as text param.
+        """
+        return quote(query)
+
+    async def get_search_links(self, query: str, stop_words: List[str] = None) -> List[str]:
+        """
+        Stage 1: Scrapes ALL vacancy links from search results for a given query.
+        Paginates through all pages automatically.
+        Filters out vacancies whose TITLES contain stop words.
+        Returns clean list of unique links.
+        """
+        if stop_words is None:
+            stop_words = []
+        stop_words_lower = [sw.lower() for sw in stop_words]
+
+        all_links = []
+        page_num = 0
+        slug = self._query_to_slug(query)
+
         async with async_playwright() as p:
-            context, browser = await self._create_context(p)
+            browser, context = await self._create_browser(p)
             page = await context.new_page()
-            
+
             try:
-                for page_num in range(pages):
-                    url = f"{self.base_url}/search/vacancy?text={query}&page={page_num}&area=113"
-                    logger.info(f"Navigating to search page {page_num}: {url}")
-                    
+                while True:
+                    # Build URL: /search/vacancy?text=QUERY&page=N&area=113 (Russia)
+                    url = f"{self.base_url}/search/vacancy?text={slug}&page={page_num}&area=113"
+                    logger.info(f"[Stage 1] Page {page_num}: {url}")
+
                     await page.goto(url, wait_until='domcontentloaded', timeout=60000)
                     await asyncio.sleep(random.uniform(2, 4))
-                    
-                    # Scroll
-                    await page.mouse.wheel(0, 500)
-                    
-                    # Extract links
-                    elements = await page.query_selector_all('a[data-qa="serp-item__title"]')
-                    
-                    if not elements:
-                        logger.warning(f"No vacancies found on page {page_num}")
+                    await page.mouse.wheel(0, 800)
+
+                    # Get all vacancy cards on this page
+                    items = await page.query_selector_all('a[data-qa="serp-item__title"]')
+
+                    if not items:
+                        logger.info(f"[Stage 1] No more vacancies on page {page_num}. Done.")
                         break
-                        
-                    for el in elements:
-                        link = await el.get_attribute('href')
+
+                    page_links_added = 0
+                    for item in items:
+                        # Get title for stop word filtering BEFORE saving link
+                        title_el = await item.query_selector('span') or item
+                        title = await item.inner_text() if item else ""
+                        title = title.strip()
+
+                        # Apply stop word filter
+                        if any(sw in title.lower() for sw in stop_words_lower):
+                            logger.info(f"[Filter] Skipped by stop word: '{title}'")
+                            continue
+
+                        link = await item.get_attribute('href')
                         if link:
-                            link = link.split('?')[0]
-                            links.append(link)
-                            
-                    logger.info(f"Found {len(elements)} links on page {page_num}")
-                    
+                            # Clean URL params (keep only base vacancy URL)
+                            link = link.split('?')[0].strip()
+                            if link not in all_links:
+                                all_links.append(link)
+                                page_links_added += 1
+
+                    logger.info(
+                        f"[Stage 1] Page {page_num}: found {len(items)} items, "
+                        f"added {page_links_added} after filtering."
+                    )
+
+                    # Check if there's a next page
+                    next_btn = await page.query_selector('a[data-qa="pager-next"]')
+                    if not next_btn:
+                        logger.info("[Stage 1] No next page button. All pages scraped.")
+                        break
+
+                    page_num += 1
+                    await asyncio.sleep(random.uniform(1, 2))
+
             except Exception as e:
-                logger.error(f"Error scraping search {query}: {e}")
+                logger.error(f"[Stage 1] Error scraping search for '{query}': {e}")
             finally:
                 await browser.close()
-                
-        return list(set(links))
+
+        logger.info(f"[Stage 1] Total links collected for '{query}': {len(all_links)}")
+        return all_links
 
     async def scrape_vacancies_batch(self, links: List[str]) -> List[Dict]:
-        """Scrapes a batch of vacancy links reusing the browser."""
+        """
+        Stage 2: For each link, opens the vacancy page and extracts full details.
+        Returns list of dicts with raw_text and parameters_json.
+        """
         results = []
         if not links:
             return []
 
         async with async_playwright() as p:
-            context, browser = await self._create_context(p)
+            browser, context = await self._create_browser(p)
             page = await context.new_page()
-            
+
             try:
                 for link in links:
                     try:
-                        logger.info(f"Scraping vacancy: {link}")
+                        logger.info(f"[Stage 2] Scraping: {link}")
                         await page.goto(link, wait_until='domcontentloaded', timeout=45000)
-                        await asyncio.sleep(random.uniform(1.5, 3.5))
+                        await asyncio.sleep(random.uniform(1.5, 3))
 
-                        # Check for captcha or verify title exists
-                        if await page.query_selector("text='Enter captcha'"):
-                             logger.error("CAPTCHA detected, aborting batch")
-                             break
+                        # Captcha check
+                        if await page.query_selector("text='Введите код'") or \
+                           await page.query_selector("text='Enter captcha'"):
+                            logger.error("[Stage 2] CAPTCHA detected! Skipping batch.")
+                            break
 
-                        # Extract Data
-                        title = await page.inner_text('h1[data-qa="vacancy-title"]') if await page.query_selector('h1[data-qa="vacancy-title"]') else "No Title"
-                        description = await page.inner_text('div[data-qa="vacancy-description"]') if await page.query_selector('div[data-qa="vacancy-description"]') else ""
-                        
-                        # Try both net and gross selectors for salary
-                        salary_net = await page.query_selector('span[data-qa="vacancy-salary-compensation-type-net"]')
-                        salary_gross = await page.query_selector('span[data-qa="vacancy-salary-compensation-type-gross"]')
-                        salary = await salary_net.inner_text() if salary_net else (await salary_gross.inner_text() if salary_gross else None)
-                        
-                        company = await page.inner_text('a[data-qa="vacancy-company-name"]') if await page.query_selector('a[data-qa="vacancy-company-name"]') else None
-                        experience = await page.inner_text('span[data-qa="vacancy-experience"]') if await page.query_selector('span[data-qa="vacancy-experience"]') else None
+                        # Extract fields
+                        title = ""
+                        title_el = await page.query_selector('h1[data-qa="vacancy-title"]')
+                        if title_el:
+                            title = (await title_el.inner_text()).strip()
 
-                        raw_text = f"{title}\n{salary or ''}\n{company or ''}\n\n{description}"
-                        
-                        params = {
-                            "title": title,
-                            "salary": salary,
-                            "company": company,
-                            "experience": experience,
-                            "url": link
-                        }
-                        
+                        description = ""
+                        desc_el = await page.query_selector('div[data-qa="vacancy-description"]')
+                        if desc_el:
+                            description = (await desc_el.inner_text()).strip()
+
+                        salary = None
+                        for sal_sel in [
+                            '[data-qa="vacancy-salary-compensation-type-net"]',
+                            '[data-qa="vacancy-salary-compensation-type-gross"]',
+                            '[data-qa="vacancy-salary"]'
+                        ]:
+                            sal_el = await page.query_selector(sal_sel)
+                            if sal_el:
+                                salary = (await sal_el.inner_text()).strip()
+                                break
+
+                        company = None
+                        comp_el = await page.query_selector('a[data-qa="vacancy-company-name"]')
+                        if comp_el:
+                            company = (await comp_el.inner_text()).strip()
+
+                        experience = None
+                        exp_el = await page.query_selector('span[data-qa="vacancy-experience"]')
+                        if exp_el:
+                            experience = (await exp_el.inner_text()).strip()
+
+                        raw_text = "\n".join(filter(None, [title, salary, company, experience, "", description]))
+
                         results.append({
                             "link": link,
                             "raw_text": raw_text,
-                            "parameters_json": params,
+                            "parameters_json": {
+                                "title": title,
+                                "salary": salary,
+                                "company": company,
+                                "experience": experience,
+                                "url": link
+                            },
                             "parsing_date_time": datetime.utcnow().isoformat()
                         })
-                        
+
                     except Exception as e:
-                        logger.error(f"Error scraping {link}: {e}")
+                        logger.error(f"[Stage 2] Error scraping {link}: {e}")
                         continue
-                        
+
             except Exception as e:
-                logger.error(f"Batch scraping error: {e}")
+                logger.error(f"[Stage 2] Batch error: {e}")
             finally:
                 await browser.close()
-                
+
         return results

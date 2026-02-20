@@ -17,8 +17,17 @@ bot_app: Application = None
 @app.on_event("startup")
 async def startup_event():
     # 1. Start Scheduler
-    scheduler.add_job(run_scraper_task, "interval", hours=config.HH_SEARCH_INTERVAL_HOURS)
+    job_kwargs = dict(
+        max_instances=1,        # Never run 2 tasks in parallel
+        coalesce=True,          # Skip missed runs
+        misfire_grace_time=600  # 10 min grace
+    )
+    # 9:00 Moscow (UTC+3 = 06:00 UTC)
+    scheduler.add_job(run_scraper_task, "cron", hour=6, minute=0, **job_kwargs)
+    # 18:00 Moscow (UTC+3 = 15:00 UTC)
+    scheduler.add_job(run_scraper_task, "cron", hour=15, minute=0, **job_kwargs)
     scheduler.start()
+    logger.info("Scheduler: runs at 09:00 and 18:00 Moscow time.")
     logger.info("Scheduler started.")
 
     # 2. Start Telegram Bot
