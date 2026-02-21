@@ -67,15 +67,22 @@ async def check_vacancy_status_task():
                     await page.goto(link, wait_until='domcontentloaded', timeout=30000)
                     await asyncio.sleep(random.uniform(1, 2.5))
 
-                    # Check for archive text on page
-                    content = await page.content()
-                    if ARCHIVE_TEXT in content:
+                    # Use EXACT HH.ru data-qa selectors (found via browser DevTools):
+                    # 1. "В архиве с DD.MM.YYYY" — label under the vacancy title
+                    # 2. vacancy-archive-description — the archive notice block
+                    archived_title = await page.query_selector('[data-qa="vacancy-title-archived-text"]')
+                    archived_block = await page.query_selector('[data-qa="vacancy-archive-description"]')
+
+                    is_archived = bool(archived_title or archived_block)
+
+                    if is_archived:
                         update_vacancy_status(vacancy_id, "archiv")
                         archived_count += 1
                         logger.info(f"  → ARCHIVED: {link}")
                     else:
                         logger.info(f"  → Active: {link}")
-                        # Leave status_vacancy empty — do nothing
+
+
 
                 except Exception as e:
                     logger.error(f"Error checking {link}: {e}")
