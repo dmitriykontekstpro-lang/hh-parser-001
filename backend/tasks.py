@@ -98,6 +98,12 @@ async def run_scraper_task():
             if query_new > 0:
                 all_summary.append(f"• *{query}*: +{query_new} вакансий")
 
+            # Notify after each query
+            await _notify(
+                f"🔍 Запрос *\"{query}\"* выполнен.\n"
+                f"Найдено и сохранено: *{query_new}* вакансий"
+            )
+
             logger.info(f"[{idx}/{len(queries)}] Done: '{query}' → new={query_new}, errors={query_errors}")
 
         except Exception as e:
