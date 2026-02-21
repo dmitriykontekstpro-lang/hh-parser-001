@@ -9,69 +9,76 @@ logger = logging.getLogger(__name__)
 
 async def run_scraper_task():
     """
-    Main 4-step scraping pipeline:
-    1. Get search queries from Supabase (search_queries_hhnew)
-    2. For each query: collect all links from all search pages, filter by stop words
-    3. Remove duplicates (check vacancies_hhnew table)
-    4. Parse full details for new links and save to Supabase
+    Sequential scraping pipeline — one query at a time:
+
+    For EACH query from search_queries_hhnew:
+      1. Collect links from all search pages (with stop-word filter)
+      2. Remove duplicates (check vacancies_hhnew)
+      3. Parse full details for each new link
+      4. Save to Supabase IMMEDIATELY after parsing
+      → Then move to next query
+
+    This ensures data is saved progressively, even if the task is interrupted.
     """
     logger.info("=" * 50)
     logger.info("SCRAPER TASK STARTED")
     logger.info("=" * 50)
 
-    # Step 1: Load settings from Supabase
     queries = get_search_queries()
     stop_words = get_stop_words()
 
-    logger.info(f"Queries: {queries}")
-    logger.info(f"Stop words: {stop_words}")
+    logger.info(f"Queries ({len(queries)}): {queries}")
+    logger.info(f"Stop words ({len(stop_words)}): {stop_words[:10]}...")
 
     if not queries:
-        msg = "No active search queries found. Add them to search_queries_hhnew table."
-        logger.warning(msg)
-        await _notify(msg)
+        await _notify("⚠️ Нет активных поисковых запросов в search_queries_hhnew.")
         return 0
 
     scraper = HHScraper()
-    new_vacancies_count = 0
-    errors = 0
-    telegram_summary = []
+    total_new = 0
+    total_errors = 0
+    all_summary = []
 
-    for query in queries:
-        logger.info(f"\n--- Processing query: '{query}' ---")
+    for idx, query in enumerate(queries, 1):
+        logger.info(f"\n{'='*40}")
+        logger.info(f"[{idx}/{len(queries)}] Query: '{query}'")
+        logger.info(f"{'='*40}")
+
+        query_new = 0
+        query_errors = 0
+
         try:
-            # Step 2: Collect links from ALL pages, with stop-word filtering on titles
-            all_links = await scraper.get_search_links(query, stop_words=stop_words)
+            # Step 1: Collect links (all pages, with stop-word filtering)
+            links = await scraper.get_search_links(query, stop_words=stop_words)
 
-            if not all_links:
-                logger.info(f"No links found for '{query}'")
+            if not links:
+                logger.info(f"No links found for '{query}'. Next.")
                 continue
 
-            # Step 3: Filter out already existing vacancies (deduplication)
-            new_links = [link for link in all_links if not vacancy_exists(link)]
+            # Step 2: Deduplicate against Supabase
+            new_links = [link for link in links if not vacancy_exists(link)]
             logger.info(
-                f"Query '{query}': {len(all_links)} total, "
-                f"{len(all_links) - len(new_links)} duplicates removed, "
+                f"'{query}': {len(links)} found, "
+                f"{len(links) - len(new_links)} already in DB, "
                 f"{len(new_links)} new."
             )
 
             if not new_links:
-                logger.info(f"All vacancies for '{query}' already in DB. Skipping.")
+                logger.info(f"All vacancies for '{query}' already saved. Next.")
                 continue
 
-            # Step 4: Parse full details in batches of 10
+            # Step 3+4: Parse details and save EACH vacancy immediately
             chunk_size = 10
             for i in range(0, len(new_links), chunk_size):
                 chunk = new_links[i:i + chunk_size]
-                logger.info(f"Batch {i // chunk_size + 1}: scraping {len(chunk)} vacancies...")
+                logger.info(f"Batch {i // chunk_size + 1}: parsing {len(chunk)} vacancies...")
 
-                scraped_data = await scraper.scrape_vacancies_batch(chunk)
+                scraped = await scraper.scrape_vacancies_batch(chunk)
 
-                for data in scraped_data:
+                for data in scraped:
                     title = data.get('parameters_json', {}).get('title', 'Без названия')
                     company = data.get('parameters_json', {}).get('company', '')
 
-                    # Save to Supabase
                     record = {
                         "vacancy_link": data['link'],
                         "raw_text": data['raw_text'],
@@ -81,30 +88,39 @@ async def run_scraper_task():
 
                     res = insert_vacancy(record)
                     if res:
-                        new_vacancies_count += 1
-                        telegram_summary.append(f"• [{title}]({data['link']}) — {company}")
-                        logger.info(f"Saved: {title}")
+                        query_new += 1
+                        logger.info(f"  ✅ Saved: {title} — {company}")
                     else:
-                        errors += 1
-                        logger.error(f"Failed to save: {data['link']}")
+                        query_errors += 1
+                        logger.error(f"  ❌ Failed: {data['link']}")
+
+            # Summary for this query
+            if query_new > 0:
+                all_summary.append(f"• *{query}*: +{query_new} вакансий")
+
+            logger.info(f"[{idx}/{len(queries)}] Done: '{query}' → new={query_new}, errors={query_errors}")
 
         except Exception as e:
-            logger.error(f"Error processing query '{query}': {e}")
-            errors += 1
+            logger.error(f"Error processing '{query}': {e}")
+            query_errors += 1
 
-    # Send Telegram summary
-    summary_text = (
+        total_new += query_new
+        total_errors += query_errors
+
+    # Final Telegram report
+    text = (
         f"✅ *Парсинг завершен*\n\n"
-        f"Новых вакансий: *{new_vacancies_count}*\n"
-        f"Ошибок: {errors}\n"
+        f"Запросов обработано: {len(queries)}\n"
+        f"Новых вакансий: *{total_new}*\n"
+        f"Ошибок: {total_errors}\n"
     )
-    if telegram_summary:
-        summary_text += "\n*Последние найденные:*\n" + "\n".join(telegram_summary[:10])
+    if all_summary:
+        text += "\n*По запросам:*\n" + "\n".join(all_summary[:15])
 
-    await _notify(summary_text)
+    await _notify(text)
 
-    logger.info(f"TASK DONE. New: {new_vacancies_count}, Errors: {errors}")
-    return new_vacancies_count
+    logger.info(f"TASK DONE. Total new: {total_new}, errors: {total_errors}")
+    return total_new
 
 
 async def _notify(text: str):

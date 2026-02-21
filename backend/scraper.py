@@ -1,7 +1,6 @@
 import asyncio
 import random
 import logging
-import re
 from typing import List, Dict
 from urllib.parse import quote
 from playwright.async_api import async_playwright
@@ -11,23 +10,30 @@ from datetime import datetime
 
 def _is_blocked_by_stop_words(title: str, stop_words: List[str]) -> bool:
     """
-    Returns True if title should be EXCLUDED.
-    Uses EXACT PHRASE match (case-insensitive).
-    Example: stop word "директор" will NOT block "Директор по маркетингу"
-             BUT stop word "Директор по маркетингу" WILL block it.
-    This way short/partial stop words don't filter too aggressively.
+    Returns True if the vacancy title should be EXCLUDED.
+
+    Rule: A vacancy is blocked if its title contains the EXACT PHRASE from
+    the stop_words_hhnew.word column:
+    - All words must be present ADJACENT (next to each other)
+    - In the SAME ORDER as in Supabase
+    - In the SAME FORM (but case-insensitive)
+
+    Examples (stop word = "Директор по маркетингу"):
+      "Директор по маркетингу"         → BLOCKED ✓
+      "Зам. директор по маркетингу"    → BLOCKED ✓ (phrase is contained)
+      "директор по маркетингу (CMO)"   → BLOCKED ✓ (case-insensitive)
+      "Директор маркетингу"            → NOT blocked ✗ (words not adjacent)
+      "По маркетингу директор"         → NOT blocked ✗ (wrong order)
     """
-    title_lower = title.lower().strip()
-    for sw in stop_words:
-        sw_lower = sw.lower().strip()
-        if not sw_lower:
+    title_lower = title.lower()
+    for phrase in stop_words:
+        phrase = phrase.strip()
+        if not phrase:
             continue
-        # Check exact phrase match (the stop word must appear as complete phrase)
-        # Using word-boundary style: surrounded by spaces or at start/end
-        pattern = r'(?<![а-яёa-z])' + re.escape(sw_lower) + r'(?![а-яёa-z])'
-        if re.search(pattern, title_lower, re.IGNORECASE):
+        if phrase.lower() in title_lower:
             return True
     return False
+
 
 logger = logging.getLogger(__name__)
 
