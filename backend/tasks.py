@@ -99,10 +99,13 @@ async def run_scraper_task():
                 all_summary.append(f"• *{query}*: +{query_new} вакансий")
 
             # Notify after each query
-            await _notify(
-                f"🔍 Запрос *\"{query}\"* выполнен.\n"
-                f"Найдено и сохранено: *{query_new}* вакансий"
-            )
+            try:
+                await _notify(
+                    f"🔍 Запрос {query} выполнен.\n"
+                    f"Найдено и сохранено: {query_new} вакансий"
+                )
+            except Exception as notify_err:
+                logger.error(f"Notify error: {notify_err}")
 
             logger.info(f"[{idx}/{len(queries)}] Done: '{query}' → new={query_new}, errors={query_errors}")
 
@@ -138,7 +141,6 @@ async def _notify(text: str):
         await bot.send_message(
             chat_id=config.TELEGRAM_CHAT_ID,
             text=text,
-            parse_mode='Markdown',
             disable_web_page_preview=True
         )
     except Exception as e:
